@@ -16,8 +16,9 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
 from reportlab.lib import colors
 import chardet
 
-COMMENT_CODE = 4397482
-STATEMENT_CODE = 4442358
+COMMENT_CODE = 4444153
+STATEMENT_CODE = 4389991
+COURSE_NUMBER = 110
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -197,6 +198,7 @@ class MainWindow(QMainWindow):
         # Open file dialog
         file_path = self.open_file_dialog("CSV files (*.csv)")
 
+        # Comment out if the encoding causes issues
         with open(file_path,'rb') as f:
             result = chardet.detect(f.read())
             encoding = result['encoding']
@@ -210,9 +212,13 @@ class MainWindow(QMainWindow):
                             header_lines.append(file.readline().strip())
                     # Process the header information
                     self.process_header(header_lines)
-                    print('read_csv')
+
                     # Load the remaining file into a DataFrame, skipping the first 9 lines
                     df = pd.read_csv(file_path, skiprows=9, header=None, encoding=encoding)
+
+                    # Use if the encoding causes issues
+                    # df = pd.read_csv(file_path, skiprows=9, header=None)
+
                 else:
                     raise ValueError("Unsupported file format")
 
@@ -289,25 +295,23 @@ class MainWindow(QMainWindow):
         # df_filtered.loc[:, 2] = ""
         # df_filtered = df_filtered.drop(3, axis=1)
 
+        # NEW CODE: Reorder columns to put comments and statement at end
         cols = list(df_filtered.columns)
-        last_col = cols[-1]
 
+        # Create new column order without the comments and statement columns
+        new_cols = [col for col in cols if col not in [self.colComments, self.colStatement]]
+
+        # Add comments and statement columns back in desired position
         if self.hasComments:
-            cols.remove(self.colComments)
-        cols.remove(self.colStatement)
+            new_cols.insert(len(new_cols) - 1, self.colComments)  # Second to last
 
-        # Insert them in the desired order (second to last and last)
-        # We remove one from the length since we already removed these columns
-        insert_position = len(cols) - 1
-        if self.hasComments:
-            cols.insert(insert_position, self.colComments)
-        cols.insert(insert_position + 1, self.colStatement)
-
-        # Add the final column back
-        cols.append(last_col)
+        new_cols.insert(len(new_cols) - 1, self.colStatement)     # Last before final column
 
         # Reorder the DataFrame
-        df_filtered = df_filtered[cols]
+        df_filtered = df_filtered[new_cols]
+
+        # Renumber the columns sequentially
+        df_filtered.columns = list(range(len(new_cols)))
 
         self.final_data = df_filtered
 
@@ -346,7 +350,7 @@ class MainWindow(QMainWindow):
             try:
                 df = pd.read_excel(file_path, skiprows=1)
                 df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
-                filter = df["Course Number"] == "215"
+                filter = df["Course Number"] == COURSE_NUMBER
                 df_filtered = df[filter]
                 df_filtered = df_filtered[["Section", "Email", "Cadet Name"]]
                 df_filtered["Cadet Name"] = df_filtered["Cadet Name"].map(self.process_names)
@@ -525,9 +529,9 @@ class MainWindow(QMainWindow):
 
     def export(self):
         # Create path to assignment output folder and create if it doesn't exist
-        self.assignment_output_dir = os.path.join(self.output_dir, f'{self.assignment.split("-")[0].strip()}')
+        self.assignment_output_dir = os.path.join(self.output_dir, f'{self.assignment.split("/")[0].strip()}')
+        print(self.assignment_output_dir)
         result = f'Error saving files'
-
 
         if not os.path.exists(self.assignment_output_dir):
             os.makedirs(self.assignment_output_dir)
@@ -669,8 +673,6 @@ class MainWindow(QMainWindow):
         for i in range(4, number_of_columns - 1):
             ws.column_dimensions[get_column_letter(i)].width = self.pixel_to_pt(19)
 
-        print(i, number_of_columns)
-
         if self.hasComments:
             ws.column_dimensions[get_column_letter(i + 1)].width = self.pixel_to_pt(665)
             ws.column_dimensions[get_column_letter(i + 2)].width = self.pixel_to_pt(294)
@@ -777,7 +779,7 @@ class MainWindow(QMainWindow):
                     ws[index].fill = whiteFill
 
         # Generate PDF from current worksheet
-        self.create_pdf(ws, currentSection.iloc[0, 0], number_of_rows + 3)
+        # self.create_pdf(ws, currentSection.iloc[0, 0], number_of_rows + 3)
 
         # Add the copy-paste section to the worksheet
         if self.hasComments:
