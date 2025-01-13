@@ -17,7 +17,8 @@ from reportlab.lib import colors
 import chardet
 
 COMMENT_CODE = 4444153
-STATEMENT_CODE = 4389991
+# STATEMENT_CODE = 4389991
+STATEMENT_CODE = 4442358
 COURSE_NUMBER = 110
 
 class MainWindow(QMainWindow):
@@ -230,7 +231,7 @@ class MainWindow(QMainWindow):
                 self.btnExportData.setEnabled(True)
 
             except Exception as e:
-                self.show_error(f"Failed to load file\n{e}")
+                self.show_error(f"Failed to load file\n{e}\n{file_path}")
                 return
 
     def process_header(self, header_lines):
@@ -284,7 +285,7 @@ class MainWindow(QMainWindow):
                         df_copy.iloc[index, i] = "1"
             else:
                 print("Unpaired row...")
-
+        
         filter_second_row = df_copy.iloc[:,0].notna()
         df_filtered = df_copy[filter_second_row]
         df_filtered.loc[:, 1] = df_filtered[1].str.replace('@usafa$', '', regex=True)
@@ -294,19 +295,21 @@ class MainWindow(QMainWindow):
         # df_filtered.loc[:, 2] = None
         # df_filtered.loc[:, 2] = ""
         # df_filtered = df_filtered.drop(3, axis=1)
-
+        
         # NEW CODE: Reorder columns to put comments and statement at end
         cols = list(df_filtered.columns)
 
         # Create new column order without the comments and statement columns
         new_cols = [col for col in cols if col not in [self.colComments, self.colStatement]]
-
+        print(new_cols)
+        print(f'Comments: {self.colComments}, Statement: {self.colStatement}')
         # Add comments and statement columns back in desired position
         if self.hasComments:
             new_cols.insert(len(new_cols) - 1, self.colComments)  # Second to last
 
         new_cols.insert(len(new_cols) - 1, self.colStatement)     # Last before final column
 
+        print(new_cols)
         # Reorder the DataFrame
         df_filtered = df_filtered[new_cols]
 
@@ -349,12 +352,14 @@ class MainWindow(QMainWindow):
         if file_path:
             try:
                 df = pd.read_excel(file_path, skiprows=1)
+                print(df)
                 df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
-                filter = df["Course Number"] == COURSE_NUMBER
+                filter = df["Course Number"] == f'{COURSE_NUMBER}'
+                print(df[filter])
                 df_filtered = df[filter]
                 df_filtered = df_filtered[["Section", "Email", "Cadet Name"]]
                 df_filtered["Cadet Name"] = df_filtered["Cadet Name"].map(self.process_names)
-
+                print(df_filtered)
                 # Get the script directory
                 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -370,7 +375,7 @@ class MainWindow(QMainWindow):
                 self.check_for_sections()
 
             except Exception as e:
-                self.show_error(f"Failed fo load file\n{e}")
+                self.show_error(f"Failed to load file\n{e}")
 
     def save_instructors(self):
         # Get the script directory
