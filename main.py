@@ -19,7 +19,7 @@ import chardet
 COMMENT_CODE = 4444153
 # STATEMENT_CODE = 4389991
 STATEMENT_CODE = 4442358
-COURSE_NUMBER = 110
+COURSE_NUMBER = 215
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -242,6 +242,7 @@ class MainWindow(QMainWindow):
         self.questions = len(self.points)
 
         j = 0
+        print(header_info)
         for i in header_info[6]:
             if i == f'{COMMENT_CODE}':
                 self.hasComments = True
@@ -309,7 +310,7 @@ class MainWindow(QMainWindow):
 
         new_cols.insert(len(new_cols) - 1, self.colStatement)     # Last before final column
 
-        print(new_cols)
+        print(f'New Columns: {new_cols}')
         # Reorder the DataFrame
         df_filtered = df_filtered[new_cols]
 
