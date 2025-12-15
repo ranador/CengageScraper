@@ -1,52 +1,93 @@
 import os
 import sys
 
-import openpyxl
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QMessageBox, QLabel, QListWidget, QPushButton, QGridLayout, QFileDialog, QTextEdit
+from dataclasses import dataclass
+
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QMessageBox, QLabel, QListWidget, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QTextEdit, QLineEdit, QGroupBox
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import QSize
-import pandas as pd
-import csv
-import re
+
+import openpyxl
 from openpyxl.styles import PatternFill, Alignment, Font
 from openpyxl.styles.borders import Border, Side
 from openpyxl.utils.cell import get_column_letter
-from reportlab.lib.pagesizes import letter, landscape
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
-from reportlab.lib import colors
-import chardet
 
-COMMENT_CODE = 4444153
-# STATEMENT_CODE = 4389991
-STATEMENT_CODE = 4442358
-COURSE_NUMBER = 215
+import pandas as pd
+import pickle
+import csv
+import re
+from pathlib import Path
+
+@dataclass
+class Settings:
+    commentCode: str = None
+    documentationCode: str = None
+    courseNumber: str = None
+    roster: pd.DataFrame = None
+    header_length: int = 9
+    asst_name_idx: int = 4
+    asst_points_idx: int = 7
+    
+    output_directory: str = None
+
+    def save(self, filepath='settings/settings.pkl'):
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cls, filepath='settings/settings.pkl'):
+        try:
+            with open(filepath, 'rb') as f:
+                return pickle.load(f)
+        except FileNotFoundError:
+            return cls()
+
+@dataclass
+class Data:
+    raw_data: list = None
+    header_data: list = None
+    final_data: pd.DataFrame = None
+    name: str = None
+    points: list[float] = None
+    n_questions: int = None
+    qCodes: list[tuple[str, int]] = None
+    comment_idx: int = None
+    documentation_idx: int = None
 
 class MainWindow(QMainWindow):
     def __init__(self):
         # Ensures all initialization code from the inherited class is executed
         super().__init__()
 
+        # Set application spanning styles
+        btnMargin = 25
+        btnIconHeight = 32
+        btnIconSize = QSize(btnIconHeight, btnIconHeight)
+        btnHeight = btnIconHeight + btnMargin
+
+        self.setStyleSheet(f"""
+            QGroupBox QPushButton {{
+                height:  {btnHeight}              
+            }}
+            QLabel {{
+                height: 100px;
+                font-family: Arial;
+            }}
+            QListWidget, QTextEdit, QLineEdit {{
+                border: 1px solid grey;
+            }}
+            QGroupBox {{
+                min-width: 200px;
+                min-height: 400px;
+            }}
+        """)
+
         # Global Variables
-        self.data = pd.DataFrame()
-        self.final_data = pd.DataFrame()
-        self.roster = pd.DataFrame()
-        self.instructors = None
-        self.assignment = None
-        self.points = None
-        self.questions = None
-        self.hasComments = False
-        self.hasRoster = False
-        self.hasInstructorData = False
-        self.hasSectionData = False
-        self.colComments = None
-        self.colStatement = None
-        self.sections = None
-        self.output_dir = None
-        self.assignment_output_dir = None
-        self.output_wb = None
+        self.settings = Settings().load()
+        self.asst_data = None
 
         # Setup output directory
-        self.output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
+        self.output_dir = 'output'
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 
@@ -56,93 +97,74 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Cengage Data Scraper")
 
         # Create the layout
-        main_layout = QGridLayout()
+        main_layout = QHBoxLayout()
 
-        # Labels
-        self.lblRoster = QLabel("Current Roster")
-        self.lblSections = QLabel("Sections")
-        self.lblInstructors = QLabel("Instructors")
-        self.lblData = QLabel("Data")
+        # Settings Group
+        grpOptions = QGroupBox("Settings")
+        optionLayout = QVBoxLayout()
+        grpOptions.setLayout(optionLayout)
 
-        self.lblRoster.setFixedHeight(10)
-        self.lblSections.setFixedHeight(10)
-        self.lblInstructors.setFixedHeight(10)
-        self.lblData.setFixedHeight(10)
+        lblCourseNumber = QLabel("Course Number")
+        self.lnEdtCourseNumber = QLineEdit(f'{self.settings.courseNumber if self.settings.courseNumber else ""}')
+        lblDocumentationCode = QLabel("Documentation Code")
+        self.lnEdtDocumentationCode = QLineEdit(f'{self.settings.documentationCode if self.settings.documentationCode else ""}')
+        lblCommentCode = QLabel("Comment Code")
+        self.lnEdtCommentCode = QLineEdit(f'{self.settings.commentCode if self.settings.commentCode else ""}')
+        self.btnSaveSettings = QPushButton("Save Settings", enabled=True, clicked=self.save_settings)
+        
+        optionLayout.addWidget(lblCourseNumber)
+        optionLayout.addWidget(self.lnEdtCourseNumber)
+        optionLayout.addWidget(lblDocumentationCode)
+        optionLayout.addWidget(self.lnEdtDocumentationCode)
+        optionLayout.addWidget(lblCommentCode)
+        optionLayout.addWidget(self.lnEdtCommentCode)
+        optionLayout.addStretch()
+        optionLayout.addWidget(self.btnSaveSettings)
 
-        # Lists and one text box
+        # Roster Group
+        grpRoster = QGroupBox("Current Roster")
+        rosterLayout = QVBoxLayout()
+        grpRoster.setLayout(rosterLayout)
+
         self.listRoster = QListWidget()
-        self.listSections = QListWidget()
-        self.listInstructors = QListWidget()
+        self.btnRoster = QPushButton("Load Roster", enabled=True)
+
+        rosterLayout.addWidget(self.listRoster)
+        rosterLayout.addWidget(self.btnRoster)
+        
+        # Data Group
+        grpData = QGroupBox("Data")
+        dataLayout = QVBoxLayout()
+        grpData.setLayout(dataLayout)
+
         self.txtData = QTextEdit()
-
-        self.listSections.setFixedHeight(200)
-        self.listInstructors.setFixedHeight(200)
-        self.txtData.setFixedWidth(500)
+        self.txtData.setMinimumWidth(500)
         self.txtData.setLineWrapMode(QTextEdit.NoWrap)
-
-        self.listRoster.setStyleSheet("border: 1px solid grey;")
-        self.listSections.setStyleSheet("border: 1px solid grey;")
-        self.listInstructors.setStyleSheet("border: 1px solid grey;")
-        self.txtData.setStyleSheet("border: 1px solid grey;")
-
-        # Buttons
-        self.btnRoster = QPushButton("Load Roster")
-        self.btnSections = QPushButton("Assign Sections")
-        self.btnRemoveInstructors = QPushButton("Remove Instructor")
-        self.btnLoadData = QPushButton("Load Data")
-        self.btnExportData = QPushButton("Export Data")
-
-        self.btnRoster.setEnabled(True)
-        self.btnSections.setEnabled(False)
-        self.btnRemoveInstructors.setEnabled(False)
-        self.btnLoadData.setEnabled(False)
-        self.btnExportData.setEnabled(False)
-
-        btnMargin = 25
-        btnIconHeight = 32
-        btnIconSize = QSize(btnIconHeight, btnIconHeight)
-        btnHeight = btnIconHeight + btnMargin
-
-        self.btnRoster.setFixedHeight(btnHeight)
-        self.btnSections.setFixedHeight(btnHeight)
-        self.btnRemoveInstructors.setFixedHeight(btnHeight)
-        self.btnLoadData.setFixedHeight(btnHeight)
-        self.btnExportData.setFixedHeight(btnHeight)
-
+        self.btnLoadData = QPushButton("Load Data", enabled=True, clicked=self.load_data_file)
+        self.btnExportData = QPushButton("Export Data", enabled=False, clicked=self.export)
         self.btnLoadData.setIcon(QIcon('resources/icons/parse.ico'))
         self.btnLoadData.setIconSize(btnIconSize)
         self.btnExportData.setIcon(QIcon('resources/icons/export.png'))
         self.btnExportData.setIconSize(btnIconSize)
 
+        dataLayout.addWidget(self.txtData)
+        tempHLayout = QHBoxLayout()
+        tempHLayout.addWidget(self.btnLoadData)
+        tempHLayout.addWidget(self.btnExportData)
+        dataLayout.addLayout(tempHLayout)
+
         # Connect buttons to functions
         self.btnRoster.clicked.connect(self.setup_roster)
-        self.btnSections.clicked.connect(self.assign_sections)
-        self.btnRemoveInstructors.clicked.connect(self.remove_instructors)
-        self.btnLoadData.clicked.connect(self.load_file)
-        self.btnExportData.clicked.connect(self.export)
 
         # Add widgets to the grid
-        main_layout.addWidget(self.lblRoster, 0, 0)
-        main_layout.addWidget(self.lblSections, 0, 1)
-        main_layout.addWidget(self.lblData, 0, 3)
-
-        main_layout.addWidget(self.listRoster, 1, 0, 3, 1)
-        main_layout.addWidget(self.listSections, 1, 1, 1, 2)
-        main_layout.addWidget(self.lblInstructors, 2, 1)
-        main_layout.addWidget(self.listInstructors, 3, 1, 1, 2)
-        main_layout.addWidget(self.txtData, 1, 3, 3, 2)
-
-        main_layout.addWidget(self.btnRoster, 4, 0)
-        main_layout.addWidget(self.btnRemoveInstructors, 4, 1)
-        main_layout.addWidget(self.btnSections, 4, 2)
-        main_layout.addWidget(self.btnLoadData, 4, 3)
-        main_layout.addWidget(self.btnExportData, 4, 4)
+        main_layout.addWidget(grpOptions, stretch=1)
+        main_layout.addWidget(grpRoster, stretch=1)
+        main_layout.addWidget(grpData, stretch=3)
 
         # Set the layout for the GUI
         main_widget.setLayout(main_layout)
 
-        # Check for configuration files (roster, instructors, and sections)
-        self.check_for_config_files()
+        self.populate_roster()
 
     def show_message(self, message):
         msg = QMessageBox()
@@ -173,469 +195,184 @@ class MainWindow(QMainWindow):
         if file_name:
             return file_name
 
-    def strip_whitespace(self, x):
-        if isinstance(x, str):
-            return x.strip()
-        return x
+    def populate_roster(self):
+        if self.settings.roster is None:
+            self.show_message('You need to establish a class roster.')
+            return
+        for name, section in zip(self.settings.roster['Cadet Name'], self.settings.roster['Section']):
+            self.listRoster.addItem(f'{name} ({section})')
+        
+        self.btnLoadData.setEnabled(True)
+    
+    def populate_data_view(self, asst_data: Data):
+        self.txtData.setHtml(asst_data.final_data.to_html())
+        self.btnExportData.setEnabled(True)
 
     def process_names(self, text):
-        # Use a regular expression to find the pattern and preserve the desired part
         match = re.search(r',[^ ]+', text)
-        if match:
-            end_index = match.end()
-            first_space_after_comma = text.find(' ', end_index)
-            if first_space_after_comma != -1:
-                text = text[:first_space_after_comma]
-            else:
-                text = text[:end_index]
+        text = text[:match.end()] if match else text
+
         return text
 
-    def load_file(self):
-        # Check if roster loaded, exit function if no roster
-        if self.listRoster.count() == 0:
-            self.show_message(f"No roster found, please generate a new roster.")
-            return
-
-        # Open file dialog
-        file_path = self.open_file_dialog("CSV files (*.csv)")
-
-        # Comment out if the encoding causes issues
-        with open(file_path,'rb') as f:
-            result = chardet.detect(f.read())
-            encoding = result['encoding']
-
-        if file_path:
-            try:
-                header_lines = []
-                if file_path.endswith('.csv'):
-                    with open(file_path, 'r') as file:
-                        for _ in range(8):
-                            header_lines.append(file.readline().strip())
-                    # Process the header information
-                    self.process_header(header_lines)
-
-                    # Load the remaining file into a DataFrame, skipping the first 9 lines
-                    df = pd.read_csv(file_path, skiprows=9, header=None, encoding=encoding)
-
-                    # Use if the encoding causes issues
-                    # df = pd.read_csv(file_path, skiprows=9, header=None)
-
-                else:
-                    raise ValueError("Unsupported file format")
-
-                # Display DataFrame in a new window
-                self.data = df
-                self.parse_data()
-
-                # Enable export button
-                self.btnExportData.setEnabled(True)
-
-            except Exception as e:
-                self.show_error(f"Failed to load file\n{e}\n{file_path}")
-                return
-
-    def process_header(self, header_lines):
-        # Use csv.reader to properly handle commas within quotes
-        header_info = [list(csv.reader([line]))[0] for line in header_lines]
-        self.assignment = header_info[4][1]
-        self.points = [float(x) for x in header_info[7] if x != '' and x != 'Points']
-        self.questions = len(self.points)
-
-        j = 0
-        print(header_info)
-        for i in header_info[6]:
-            if i == f'{COMMENT_CODE}':
-                self.hasComments = True
-                self.colComments = j
-                self.questions -= 1
-                j += 1
-            elif i == f'{STATEMENT_CODE}':
-                self.colStatement = j
-                self.questions -= 1
-                j += 1
-            else:
-                j += 1
-
-        # print(self.hasComments)
-        # print(self.colComments)
-        # print(self.assignment)
-        # print(self.points)
-
-    def parse_data(self):
-        if self.data.empty: return
-
-        df_copy = self.data
-
-        # Iterate over every two lines
-        for index in range(0, len(df_copy), 2):
-            row1 = df_copy.iloc[index]
-            if index + 1 < len(df_copy):
-                row2 = df_copy.iloc[index + 1]
-
-                # Save the total score
-                df_copy.iloc[index, 3] = row2[3]
-
-                for i in range(4, len(row2)-1,1):
-                    if (self.hasComments and i == self.colComments) or i == self.colStatement:
-                        continue
-                    if float(row2[i]) == 0 and str(row1[i]) != "nan":
-                        df_copy.iloc[index, i] = "0"
-                    elif float(row2[i]) == 0 and str(row1[i]) == "nan":
-                        df_copy.iloc[index, i] = "-"
-                    else:
-                        df_copy.iloc[index, i] = "1"
-            else:
-                print("Unpaired row...")
+    def save_settings(self):
+        self.settings.courseNumber = self.lnEdtCourseNumber.text() if self.lnEdtCourseNumber.text() != '' else None
+        self.settings.commentCode = self.lnEdtCommentCode.text() if self.lnEdtCommentCode.text() != '' else None
+        self.settings.documentationCode = self.lnEdtDocumentationCode.text() if self.lnEdtDocumentationCode.text() != '' else None
         
-        filter_second_row = df_copy.iloc[:,0].notna()
-        df_filtered = df_copy[filter_second_row]
-        df_filtered.loc[:, 1] = df_filtered[1].str.replace('@usafa$', '', regex=True)
-        df_filtered.loc[:, 0] = df_filtered[0].str.replace(', ', ',', regex=False)
-        df_filtered.loc[:, 0] = df_filtered[0].map(self.process_names)
-        df_filtered = df_filtered.fillna('')
-        # df_filtered.loc[:, 2] = None
-        # df_filtered.loc[:, 2] = ""
-        # df_filtered = df_filtered.drop(3, axis=1)
-        
-        # NEW CODE: Reorder columns to put comments and statement at end
-        cols = list(df_filtered.columns)
-
-        # Create new column order without the comments and statement columns
-        new_cols = [col for col in cols if col not in [self.colComments, self.colStatement]]
-        print(new_cols)
-        print(f'Comments: {self.colComments}, Statement: {self.colStatement}')
-        # Add comments and statement columns back in desired position
-        if self.hasComments:
-            new_cols.insert(len(new_cols) - 1, self.colComments)  # Second to last
-
-        new_cols.insert(len(new_cols) - 1, self.colStatement)     # Last before final column
-
-        print(f'New Columns: {new_cols}')
-        # Reorder the DataFrame
-        df_filtered = df_filtered[new_cols]
-
-        # Renumber the columns sequentially
-        df_filtered.columns = list(range(len(new_cols)))
-
-        self.final_data = df_filtered
-
-        email_filter = self.final_data.iloc[:, 1].isin(self.roster.iloc[:, 1])
-        name_filter = self.final_data.iloc[:, 0].isin(self.roster.iloc[:, 2])
-        combined_filter = email_filter | name_filter
-
-        if self.hasInstructorData == False:
-            self.instructors = self.final_data.iloc[:, 0:2][~combined_filter]
-            self.save_instructors()
-
-        self.final_data = self.final_data[combined_filter]
-
-        for index, row in self.final_data.iterrows():
-
-            filter_one = self.roster["Email"] == row[1]
-            if filter_one.any():
-                self.final_data.at[index, 2] = self.roster.loc[filter_one, "Section"].values[0]
-                continue
-
-            filter_two = self.roster["Cadet Name"] == row[0]
-            if filter_two.any():
-                self.final_data.at[index, 2] = self.roster.loc[filter_two, "Section"].values[0]
-                continue
-
-        # Display in text edit
-        df_display = self.final_data.drop(1, axis=1)
-        content = df_display.to_string(index=False, header=False)
-        self.txtData.setPlainText(content)
+        self.settings.save()
 
     def setup_roster(self):
-        # Open file dialog
-        file_path = self.open_file_dialog("Excel Files (*.xlsx *.xls)")
-
-        if file_path:
-            try:
-                df = pd.read_excel(file_path, skiprows=1)
-                print(df)
-                df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
-                filter = df["Course Number"] == f'{COURSE_NUMBER}'
-                print(df[filter])
-                df_filtered = df[filter]
-                df_filtered = df_filtered[["Section", "Email", "Cadet Name"]]
-                df_filtered["Cadet Name"] = df_filtered["Cadet Name"].map(self.process_names)
-                print(df_filtered)
-                # Get the script directory
-                script_dir = os.path.dirname(os.path.abspath(__file__))
-
-                # Define the file path in the script directory
-                file_path = os.path.join(script_dir, 'current_roster.csv')
-
-                # Save the DataFrame to a CSV file
-                df_filtered.to_csv(file_path, index=False)
-
-                print(f"Roster info saved to {file_path}")
-
-                self.check_for_roster()
-                self.check_for_sections()
-
-            except Exception as e:
-                self.show_error(f"Failed to load file\n{e}")
-
-    def save_instructors(self):
-        # Get the script directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-
-        # Define the file path in the script directory
-        file_path = os.path.join(script_dir, 'instructors.csv')
-
-        # Save the DataFrame to a CSV file
-        self.instructors.to_csv(file_path, index=False)
-
-        print(f"Instructors info saved to {file_path}")
-        self.check_for_instructors()
-
-    def save_sections(self):
-        # Get the script directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-
-        # Define the file path in the script directory
-        file_path = os.path.join(script_dir, 'sections.csv')
-
-        # Save the DataFrame to a CSV file
-        self.sections.to_csv(file_path, index=False)
-
-        print(f"Sections info saved to {file_path}")
-        self.check_for_sections()
-
-    def check_for_config_files(self):
-        self.check_for_roster()
-        self.check_for_instructors()
-        self.check_for_sections()
-
-    def check_for_roster(self):
-        # Get the script directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(script_dir, 'current_roster.csv')
-
-        # Check if the file exists
-        if os.path.exists(file_path):
-            # Load the file into a DataFrame
-            df = pd.read_csv(file_path)
-
-            # Save to roster global
-            self.roster = df
-            self.sections = self.roster.iloc[:, 0].unique()
-
-            # Clear the Listbox
-            self.listRoster.clear()
-            # self.listSections.clear()
-
-            # Insert DataFrame content into the Listbox
-            for index, row in self.roster.iterrows():
-                self.listRoster.addItem(f"{row['Cadet Name']} ({row['Section']})")
-
-            # # Insert DataFrame content into the Listbox
-            # for row in self.sections:
-            #     self.listSections.addItem(row)
-
-            self.btnRoster.setText("Update Roster")
-
-            # Enable appropriate buttons after load
-            self.btnSections.setEnabled(True)
-            self.btnLoadData.setEnabled(True)
-            self.hasRoster = True
-        else:
-            self.show_message(f"No roster found, please generate a new roster.")
-
-    def check_for_instructors(self):
-        # Get the script directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(script_dir, 'instructors.csv')
-
-        # Check if the file exists
-        if os.path.exists(file_path):
-            # Load the file into a DataFrame
-            df = pd.read_csv(file_path)
-
-            # Save to roster global
-            self.instructors = df
-
-            # Clear the Listbox
-            self.listInstructors.clear()
-
-            # Insert DataFrame content into the Listbox
-            for index, row in self.instructors.iterrows():
-                self.listInstructors.addItem(f"{row.iloc[0]}")
-
-            # Enable appropriate buttons after load
-            self.btnSections.setEnabled(True)
-            self.btnRemoveInstructors.setEnabled(True)
-            self.hasInstructorData = True
-        else:
-            self.show_message(f"No instructors found, please load a file to generate.")
-
-    def check_for_sections(self):
-        # Get the script directory
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(script_dir, 'sections.csv')
-
-        # Check if the file exists
-        if os.path.exists(file_path):
-            # Load the file into a DataFrame
-            df = pd.read_csv(file_path)
-
-            # Save to roster global
-            self.sections = df
-
-            # Clear the Listbox
-            self.listSections.clear()
-
-            # Insert DataFrame content into the Listbox
-            for index, row in self.sections.iterrows():
-                if row.iloc[1] == " ":
-                    self.listSections.addItem(f"{row.iloc[0]}")
-                else:
-                    self.listSections.addItem(f"{row.iloc[0]} -- {row.iloc[1]}")
-
-            # Enable appropriate buttons after load
-            self.btnSections.setEnabled(True)
-            self.hasSectionData = True
-        elif self.hasRoster:
-            self.sections = self.roster.iloc[:, 0].unique()
-            self.sections = pd.DataFrame(self.sections)
-            self.sections[1] = str(" ")
-            self.save_sections()
-        else:
-            self.show_message(f"No section info found, please reload roster to generate.")
-
-    def remove_instructors(self):
-        selected = self.listInstructors.currentItem().text()
-
-        if not self.confirm_action(f'Are you sure you want to remove {selected} from the list of instructors?'):
+        # Verify Data
+        if self.settings.courseNumber is None: 
+            self.show_message('You must enter course information before continuing')
             return
 
-        self.instructors = self.instructors[~(self.instructors.iloc[:, 0] == selected)]
-        self.save_instructors()
+        # Verify intent
+        if self.settings.roster is not None and not self.confirm_action('This will reset the current roster, do you wish to continue?'): return
 
-    def assign_sections(self):
-        j = 0
-        if self.listSections.selectedItems() and self.listInstructors.selectedItems():
-            filter = self.sections.iloc[:, 0] == self.listSections.currentItem().text().split(" -- ")[0]            # Have to split on ' -- ' in case the section has already been assigned
-            index = self.sections[filter].index[0]
-            self.sections.iloc[index, 1] = self.listInstructors.currentItem().text()
-            self.save_sections()
-        else:
-            self.show_error("Must select a section and an instructor")
+        # Open file dialog
+        file_path = self.open_file_dialog("Excel Files (*.xlsx *.xls)")
+        if not file_path: 
+            return
 
-    def pixel_to_pt(self, x):
-        return x / 7.0
+        try:
+            df = pd.read_excel(file_path, skiprows=1)
 
-    def truncate_string(self, s, max_length=20):
-        return s if len(s) <= max_length else s[:max_length] + '...'
+            df["Course Number"] = df["Course Number"].str.strip()
+            df = df[df["Course Number"] == f'{self.settings.courseNumber}'][["Section", "Email", "Cadet Name"]]
+            df["Cadet Name"] = df["Cadet Name"].str.strip().map(self.process_names)
 
-    def truncate_or_pad_string(self, s, max_length=70):
-        return (s[:max_length - 3] + '...') if len(s) > max_length else s.ljust(max_length)
+            self.settings.roster = df
+            self.settings.save()
+            self.populate_roster()
+
+        except Exception as e:
+            self.show_error(f"Failed to load file\n{e}")
+    
+    def load_data_file(self):
+        file_path = self.open_file_dialog("CSV Files (*.csv)")
+        if not file_path:
+            return
+        
+        with open(file_path, 'r') as f:
+            data = f.readlines()
+            data = [x.strip() for x in data]
+            header = data[:self.settings.header_length]
+            body = data[self.settings.header_length:]
+        
+        asst_data = self.process_header(Data(raw_data=body, header_data=header))
+        asst_data = self.parse_data(asst_data)
+        
+        self.populate_data_view(asst_data)
+        self.asst_data = asst_data
+
+    def process_header(self, asst_data: Data):
+        header = asst_data.header_data
+
+        points = [float(x) for x in header[self.settings.asst_points_idx].split(',') if x != '' and x != 'Points']
+        name = header[self.settings.asst_name_idx].split(',')[1]
+        qCodes = [(x, j) for j, x in enumerate(header[6].split(',')) if x.isdecimal()]
+
+        for code, j in qCodes:
+            if code == self.settings.commentCode:
+                asst_data.comment_idx = j
+            if code == self.settings.documentationCode:
+                asst_data.documentation_idx = j
+
+        asst_data.name = name
+        asst_data.points = points
+        asst_data.n_questions = len(points)
+        asst_data.qCodes = qCodes
+
+        return asst_data
+    
+    def parse_data(self, data: Data):
+        csvReader = csv.reader(data.raw_data)
+        students: pd.DataFrame = self.settings.roster
+        result = []
+        email = ''
+        name = ''
+        comment = None
+        documentation = None
+
+        for i, row in enumerate(csvReader):
+            if i%2 == 1:
+                filter = students['Email'].isin([email])
+                if filter.any():
+                    section = students[filter]['Section'].iloc[0]
+                    nRow = [name, email, section]
+                    
+                    for j, entry in enumerate(row):
+                        if j == 3:
+                            nRow.append(float(entry))
+                        if j >= 4:
+                            if float(entry) == 0:
+                                nRow.append('-')
+                            elif float(entry) == data.points[j - 4]:
+                                nRow.append(1.0)
+                            else:
+                                nRow.append(0.5)
+                    
+                    if data.documentation_idx:
+                        nRow[-1] = documentation if documentation else ''
+                    if data.comment_idx:
+                        nRow[-2 if data.documentation_idx else -1] = comment if comment else ''
+
+                    result.append(nRow)          
+            else:
+                email = row[1].split('@usafa')[0]
+                name = self.process_names(row[0])
+                comment = row[data.comment_idx] if data.comment_idx else None
+                documentation = row[data.documentation_idx] if data.documentation_idx else None
+
+        header = ['Name','Email','Section', 'Total'] + [f'Q{x + 1}' for x in range(data.n_questions)]
+
+        if data.documentation_idx:
+            header[-1] = 'Documentation'
+        if data.comment_idx:
+            header[-2 if data.documentation_idx else -1] = 'Comment'
+
+        data.final_data = pd.DataFrame(result, columns=header)
+
+        return data
 
     def export(self):
-        # Create path to assignment output folder and create if it doesn't exist
-        self.assignment_output_dir = os.path.join(self.output_dir, f'{self.assignment.split("/")[0].strip()}')
-        print(self.assignment_output_dir)
-        result = f'Error saving files'
+        asst_data = self.asst_data
+        output_dir = Path('output') / asst_data.name.strip('"')
+        file_path = output_dir / 'output.xlsx'
 
-        if not os.path.exists(self.assignment_output_dir):
-            os.makedirs(self.assignment_output_dir)
-
-        for section in self.sections.iloc[:, 0]:
-            subset = self.final_data[self.final_data.iloc[:, 2] == section]
-
-            if not subset.empty:
-                result = self.create_table(subset)
-
-        print(f'Saved the output to {result}')
-
-
-    def create_pdf(self, ws, title, maxrow):
-        # Extract data and cell colors from the worksheet, ignoring the first row, last row, and first/last columns
-
-        data = []
-        cell_colors = []
-        for row in ws.iter_rows(min_row=2, max_row=maxrow, min_col=2, max_col=ws.max_column - 1):
-            row_data = []
-            row_colors = []
-            for cell in row:
-                row_data.append(str(cell.value).lstrip() if cell.value is not None else "")
-                if cell.fill.fgColor.rgb is not None:
-                    # Convert RGB from 'FF123456' to hex '#123456'
-                    hex_color = '#' + cell.fill.fgColor.rgb[2:]
-                else:
-                    hex_color = None
-                row_colors.append(hex_color)
-            data.append(row_data)
-            cell_colors.append(row_colors)
-
-        # Create a PDF document
-        pdf_file = f'{title}.pdf'
-        file_path = os.path.join(self.assignment_output_dir, pdf_file)
-        # pdf = SimpleDocTemplate(pdf_file, pagesize=landscape(letter))
-        pdf = SimpleDocTemplate(file_path, pagesize=landscape(letter), leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
-
-        # Create a table with the extracted data
-        table = Table(data)
-
-        # Define basic table style
-        style = TableStyle([
-            ('GRID', (0, 2), (-1, -1), 1, colors.black),  # Grid color and thickness
-            ('BOX', (0, 0), (-1, -1), 2, colors.black),  # Outer box color and thickness
-        ])
-
-        # Apply style to the table
-        table.setStyle(style)
-
-        # Apply specific alignments and colors
-        for row_idx, row in enumerate(data):
-            for col_idx, _ in enumerate(row):
-                # Alignment
-                if col_idx == 0 or col_idx >= len(row) - 2:  # First column or last two columns
-                    alignment = 'LEFT'
-                    if row_idx == 0 and col_idx == len(row) - 2:  # First row, second to last column
-                        alignment = 'RIGHT'
-                else:
-                    alignment = 'CENTER'
-                table.setStyle(TableStyle([
-                    ('ALIGN', (col_idx, row_idx), (col_idx, row_idx), alignment)
-                ]))
-                # Background color
-                if cell_colors[row_idx][col_idx] is not None:
-                    table.setStyle(TableStyle([
-                        ('BACKGROUND', (col_idx, row_idx), (col_idx, row_idx), cell_colors[row_idx][col_idx])
-                    ]))
-
-        # Build the PDF
-        elements = [table]
-        pdf.build(elements)
-
-        print(f'PDF created successfully. [{file_path}]')
-
-    def create_table(self, dfOutput):
-        # Define the file path in the script directory
-        file_path = os.path.join(self.assignment_output_dir, f'output.xlsx')
-
-        if os.path.exists(file_path):
-            self.output_wb = openpyxl.load_workbook(file_path)
+        if not output_dir.exists():
+            output_dir.mkdir()
+        
+        if file_path.exists():
+            output_wb = openpyxl.load_workbook(file_path)
         else:
-            self.output_wb = openpyxl.Workbook()
+            output_wb = openpyxl.Workbook()
+        
+        for section in asst_data.final_data['Section'].unique():
 
-        currentSection =self.sections[self.sections.iloc[:, 0] == dfOutput.iloc[0, 2]]
+            if output_wb.sheetnames[0] == 'Sheet':
+                ws = output_wb.active
+                ws.title = f'{section}'
+            elif section in output_wb.sheetnames:
+                ws = output_wb[section]
+            else:
+                ws = output_wb.create_sheet(title=section)
 
-        # Create a new worksheet
-        if self.output_wb.sheetnames[0] == 'Sheet':
-            ws = self.output_wb.active
-            ws.title = f'{currentSection.iloc[0,0]}'
-        elif currentSection.iloc[0,0] in self.output_wb.sheetnames:
-            ws = self.output_wb[f'{currentSection.iloc[0,0]}']
-        else:
-            ws = self.output_wb.create_sheet(title=f'{currentSection.iloc[0,0]}')
+            self.generate_excel_table(asst_data.final_data[asst_data.final_data['Section'] == section], ws)
+        
+        output_wb.save(file_path)
 
-        dfOutput = dfOutput.drop(1, axis=1)
-        dfOutput = dfOutput.drop(2, axis=1)
+    def _pixel_to_pt(self, x):
+        return x / 7.0
 
+    def _truncate_string(self, s, max_length=20):
+        return s if len(s) <= max_length else s[:max_length] + '...'
+
+    def _truncate_or_pad_string(self, s, max_length=70):
+        return (s[:max_length - 3] + '...') if len(s) > max_length else s.ljust(max_length)
+
+    def generate_excel_table(self, df: pd.DataFrame, ws):
         # define fill colors
         greenFill = PatternFill(start_color='FF00B050', end_color='FF00B050', fill_type='solid')
         redFill = PatternFill(start_color='FFC00000', end_color='FFC00000', fill_type='solid')
@@ -646,178 +383,130 @@ class MainWindow(QMainWindow):
 
         # Define border styles
         thin_all_sides = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
-        thin_header_left = Border(left=Side(style='thin'), bottom=Side(style='thin'))
-        thin_header_middle = Border(bottom=Side(style='thin'))
-        thin_header_right = Border(right=Side(style='thin'), bottom=Side(style='thin'))
-        thin_header_left_top = Border(left=Side(style='thin'), top=Side(style='thin'))
-        thin_header_middle_top = Border(top=Side(style='thin'))
-        thin_header_right_top = Border(right=Side(style='thin'), top=Side(style='thin'))
+        thin_bottom = Border(bottom=Side(style='thin'))
+        thin_bottom_sides = Border(left=Side(style='thin'), right=Side(style='thin'), bottom=Side(style='thin'))
+        thin_sides = Border(left=Side(style='thin'), right=Side(style='thin'))
 
-        # Specify standard geometry
-        default_row_height = 18
-        number_of_columns = len(dfOutput.columns)
-        number_of_rows = len(dfOutput.index)
-        headerRows = 2
-        offsetRows = 3
-        commentCol = None
+        df = df.drop(['Email', 'Section'], axis=1, inplace=False).reset_index(drop=True)
+        question_cols = [col for col in df.columns if col.startswith('Q')]
+        n_questions = len(question_cols)
+        n_students = len(df)
+        documentation = 'Documentation' in df.columns
+        comment = 'Comment' in df.columns
+        last_col = 0
+        pasteLoc = None
 
-        if self.hasComments:
-            offsetCols = 3
-        else:
-            offsetCols = 2
+        center_align = Alignment(horizontal='center', vertical='center')
+        left_align_indent = Alignment(horizontal='left', vertical='center', indent=1)
 
-        # Specify the row geometry
-        for i in range(1, 201, 1):
-            ws.row_dimensions[i].height = default_row_height
+        # Set column widths
+        ws.column_dimensions['A'].width = self._pixel_to_pt(22)
+        ws.column_dimensions['B'].width = self._pixel_to_pt(200)
+        ws.column_dimensions['C'].width = self._pixel_to_pt(48)
 
-        # Specify column geometry
-        ws.column_dimensions[get_column_letter(1)].width = self.pixel_to_pt(21)
-        ws.column_dimensions[get_column_letter(2)].width = self.pixel_to_pt(168)
-        ws.column_dimensions[get_column_letter(3)].width = self.pixel_to_pt(42)
+        for i in range(n_questions):
+            last_col = 4 + i
+            col = get_column_letter(last_col)
+            ws.column_dimensions[col].width = self._pixel_to_pt(30)
+        
+        if comment:
+            last_col += 1
+            col = get_column_letter(last_col)
+            ws.column_dimensions[col].width = self._pixel_to_pt(665)
+            pasteLoc = (col, len(df['Name']) + 8)
 
-        i = 0
-        for i in range(4, number_of_columns - 1):
-            ws.column_dimensions[get_column_letter(i)].width = self.pixel_to_pt(19)
+        if documentation:
+            last_col += 1
+            col = get_column_letter(last_col)
+            ws.column_dimensions[col].width = self._pixel_to_pt(294)
+        
+        ws.column_dimensions[get_column_letter(last_col + 1)].width = self._pixel_to_pt(21)
 
-        if self.hasComments:
-            ws.column_dimensions[get_column_letter(i + 1)].width = self.pixel_to_pt(665)
-            ws.column_dimensions[get_column_letter(i + 2)].width = self.pixel_to_pt(294)
-            ws.column_dimensions[get_column_letter(i + 3)].width = self.pixel_to_pt(21)
+        # Set row heights
+        for i in range(1, n_students + 21):
+            ws.row_dimensions[i].height = 20
+        
+        for col in range(1, len(df.columns) + 2):
+            for row in range(1, len(df['Name']) + 6):
+                ws[f'{get_column_letter(col)}{row}'].fill = borderFill
 
-            # If statement to check for hasComments boolean
-            lastcolumn = i + 3
+        # Write Title
+        ws['B2'] = self.asst_data.name.strip('"')
+        ws['B2'].fill = headerFill
+        ws['B2'].border = thin_all_sides
+        ws.merge_cells(f'B2:{get_column_letter(last_col)}2')
+        ws['B2'].alignment = center_align
 
-        else:
-            ws.column_dimensions[get_column_letter(i + 1)].width = self.pixel_to_pt(294)
-            ws.column_dimensions[get_column_letter(i + 2)].width = self.pixel_to_pt(21)
+        # Write Headers
+        for i, title in enumerate(df.columns):
+            cell = f'{get_column_letter(2 + i)}4'
+            title = title if title != 'Comment' else 'What did you find interesting/useful/confusing?'
+            title = title if title != 'Documentation' else 'Documentation Statement'
+            ws[cell] = title
+            ws[cell].alignment = center_align if title.startswith(('Q', 'T')) else left_align_indent
+            ws[cell].fill = headerFill
+            ws[cell].border = thin_all_sides
 
-            # If statement to check for hasComments boolean
-            lastcolumn = i + 2
+        # Write Student Data
+        for idx, student in df.iterrows():
+            col = 2
+            row = idx + 5
 
-        # Set fill colors
-        # Borders
-        for col in range(1, lastcolumn + 1):
-            for row in range(1, number_of_rows + headerRows + offsetRows):
-                ws[get_column_letter(col) + str(row)].fill = borderFill
+            ws[f'{get_column_letter(col)}{row}'] = f'{student["Name"]}'
+            ws[f'{get_column_letter(col)}{row}'].alignment = left_align_indent
+            ws[f'{get_column_letter(col)}{row}'].fill = whiteFill
+            ws[f'{get_column_letter(col)}{row}'].border = thin_all_sides
 
-        # Interior
-        for col in range(2, lastcolumn):
-            for row in range(2, number_of_rows + headerRows + offsetRows - 1):
-                index = get_column_letter(col) + str(row)
-                if row == 2:
-                    ws[index].alignment = Alignment(vertical='center')
-                    ws[index].font = Font(bold=True)
-                    ws[index].fill = headerFill
-                    if col == 2:
-                        ws[index] = f' {currentSection.iloc[0,0]} -- {currentSection.iloc[0,1].split(",")[0]}'
-                        ws[index].border = thin_header_left_top
-                    elif col == lastcolumn - 1:
-                        ws[index].border = thin_header_right_top
-                    else:
-                        ws[index].border = thin_header_middle_top
+            col += 1
+            ws[f'{get_column_letter(col)}{row}'] = f'{student["Total"]}'
+            ws[f'{get_column_letter(col)}{row}'].alignment = center_align
+            ws[f'{get_column_letter(col)}{row}'].fill = whiteFill
+            ws[f'{get_column_letter(col)}{row}'].border = thin_all_sides
 
-                        if col == 3:
-                            pass
-                        elif col >= 4 and col <= number_of_columns + 1 - offsetCols:
-                            pass
-                        else:
-                            ws[index] = f'{self.assignment}'
-                            ws[index].alignment = Alignment(horizontal='center', vertical='center')
-                elif row == 3:
-                    ws[index].alignment = Alignment(vertical='center')
-                    ws[index].font = Font(bold=True)
-                    ws[index].fill = headerFill
-                    if col == 2:
-                        ws[index].border = thin_header_left
-                        ws[index] = " Name"
-                    elif col == lastcolumn - 1:
-                        ws[index].border = thin_header_right
-                        ws[index] = " Documentation"
-                    else:
-                        ws[index].border = thin_header_middle
-
-                        if col == 3:
-                            ws[index] = "Total"
-                            ws[index].alignment = Alignment(horizontal='center', vertical='center')
-                        elif col >= 4 and col <= number_of_columns + 1 - offsetCols:
-                            ws[index] = f'Q{col - offsetCols}'
-                            ws[index].alignment = Alignment(horizontal='center', vertical='center')
-                        else:
-                            ws[index] = "  What did you find interesting/useful/confusing?"
-                            commentCol = col
-
-                elif row - 4 >= 0 and row - 4 < number_of_rows:
-                    df_row = row - 4
-                    df_col = col - 2
-                    data = dfOutput.iloc[df_row, df_col]
-                    ws[index].alignment = Alignment(vertical='center')
-
-                    if df_col == 0:
-                        ws[index] = data.replace(',', ', ')
-                        ws[index].fill = whiteFill
-                    elif df_col == 1:
-                        ws[index] = data
-                        ws[index].fill = whiteFill
-                        ws[index].alignment = Alignment(horizontal='center', vertical='center')
-                    elif df_col >= 2 and df_col < number_of_columns - offsetCols:
-                        ws[index] = None
-                        if data == '1' :
-                            ws[index].fill = greenFill
-                        elif data == '0':
-                            ws[index].fill = redFill
-                        elif data == '-':
-                            ws[index] = data
-                            ws[index].fill = whiteFill
-                            ws[index].alignment = Alignment(horizontal='center', vertical='center')
-                        else:
-                            ws[index] = data
-                            ws[index].fill = warningFill
-                    else:
-                        if df_col == number_of_columns - offsetCols:
-                            max_length = 70
-                        else:
-                            max_length = 40
-                        ws[index] = self.truncate_or_pad_string(data, max_length=max_length)
-                        ws[index].fill = whiteFill
-
-                    ws[index].border = thin_all_sides
+            for i in range(n_questions):
+                col = 4 + i
+                cell = f'{get_column_letter(col)}{row}'
+                val = student[f'Q{i + 1}']
+                ws[cell] = val if val == '-' else ''
+                ws[cell].alignment = center_align
+                ws[cell].border = thin_all_sides
+                if val == 1:
+                    ws[cell].fill = greenFill
+                elif val == 0.5:
+                    ws[cell].fill = redFill
+                elif val == '-':
+                    ws[cell].fill = whiteFill
                 else:
-                    ws[index].fill = whiteFill
+                    ws[cell].fill = warningFill
+            
+            if comment:
+                col += 1
+                ws[f'{get_column_letter(col)}{row}'] = self._truncate_or_pad_string(f'{student["Comment"]}', max_length=95)
+                ws[f'{get_column_letter(col)}{row}'].alignment = left_align_indent
+                ws[f'{get_column_letter(col)}{row}'].fill = whiteFill
+                ws[f'{get_column_letter(col)}{row}'].border = thin_all_sides
 
-        # Generate PDF from current worksheet
-        # self.create_pdf(ws, currentSection.iloc[0, 0], number_of_rows + 3)
+            if documentation:
+                col += 1
+                ws[f'{get_column_letter(col)}{row}'] = self._truncate_or_pad_string(f'{student["Documentation"]}', max_length=40)
+                ws[f'{get_column_letter(col)}{row}'].alignment = left_align_indent
+                ws[f'{get_column_letter(col)}{row}'].fill = whiteFill
+                ws[f'{get_column_letter(col)}{row}'].border = thin_all_sides
 
-        # Add the copy-paste section to the worksheet
-        if self.hasComments:
-            comments_to_filter = ['', ' ', 'no', 'nothing yet', 'none', 'nothing', 'unsure']
-            n0 = number_of_rows + 8
-            n = n0
-            index = get_column_letter(commentCol) + str(n)
-            ws[index] = f'Copy and Paste Comments:'
+        if pasteLoc:
+            filter_list = ['', ' ', '.', 'none', 'n/a', 'nope', 'negative', 'nothing yet', 'nothing', 'nothing.', 'nothing so far', 'none so far', 'none for now']
+            allowed_comments = df[~df['Comment'].str.lower().isin(filter_list)]['Comment'].reset_index(drop=True)
 
-            for comment in dfOutput.iloc[:, number_of_columns - 3]:
-                if comment.lower() in (item.lower() for item in comments_to_filter):
-                    continue
-                n += 1
-                index = get_column_letter(commentCol) + str(n)
-                ws[index] = self.truncate_string(comment, max_length=500)
-                # ws[index].alignment = Alignment(wrap_text=True)
+            col, row = pasteLoc
 
-            # Apply border to the region
-            for row in range(n0 + 1, n + 1):
-                for col in range(commentCol, commentCol + 1):
-                    cell = ws.cell(row=row, column=col)
-                    if row == n0 + 1:
-                        cell.border = Border(top=thin_all_sides.top, left=thin_all_sides.left, right=thin_all_sides.right)
-                    elif row == n:
-                        cell.border = Border(bottom=thin_all_sides.bottom, left=thin_all_sides.left, right=thin_all_sides.right)
-                    else:
-                        cell.border = Border(left=thin_all_sides.left, right=thin_all_sides.right)
+            ws[f'{col}{row}'] = 'Copy and Paste Comments:'
+            ws[f'{col}{row}'].border = thin_bottom
 
-        # Save the workbook
-        self.output_wb.save(file_path)
+            for idx, student_comment in enumerate(allowed_comments.to_list()):
+                ws[f'{col}{row + idx + 1}'] = student_comment
+                ws[f'{col}{row + idx + 1}'].border = thin_sides if idx != len(allowed_comments) - 1 else thin_bottom_sides
 
-        return file_path
+        print(f'{question_cols=}, {documentation=}, {comment=}')
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
