@@ -80,15 +80,19 @@ class MainWindow(QMainWindow):
                 min-height: 400px;
             }}
         """)
+        # Setup output directory
+        settings_dir = Path('settings')
+        if not settings_dir.exists():
+            settings_dir.mkdir()
+        
+        # Setup output directory
+        output_dir = Path('output')
+        if not output_dir.exists():
+            output_dir.mkdir()
 
         # Global Variables
         self.settings = Settings().load()
         self.asst_data = None
-
-        # Setup output directory
-        self.output_dir = Path('output')
-        if not self.output_dir.exists():
-            self.output_dir.mkdir()
 
         # Initialize main widget
         main_widget = QWidget()
@@ -424,8 +428,8 @@ class MainWindow(QMainWindow):
         # Set row heights
         for i in range(1, n_students + 21):
             ws.row_dimensions[i].height = 20
-        
-        for col in range(1, len(df.columns) + 2):
+
+        for col in range(1, len(df.columns) + 3):
             for row in range(1, len(df['Name']) + 6):
                 ws[f'{get_column_letter(col)}{row}'].fill = borderFill
 
