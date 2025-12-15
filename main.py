@@ -1,6 +1,5 @@
-import os
 import sys
-
+from pathlib import Path
 from dataclasses import dataclass
 
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QMessageBox, QLabel, QListWidget, QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QTextEdit, QLineEdit, QGroupBox
@@ -8,7 +7,7 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import QSize
 
 import openpyxl
-from openpyxl.styles import PatternFill, Alignment, Font
+from openpyxl.styles import PatternFill, Alignment
 from openpyxl.styles.borders import Border, Side
 from openpyxl.utils.cell import get_column_letter
 
@@ -16,7 +15,7 @@ import pandas as pd
 import pickle
 import csv
 import re
-from pathlib import Path
+
 
 @dataclass
 class Settings:
@@ -87,9 +86,9 @@ class MainWindow(QMainWindow):
         self.asst_data = None
 
         # Setup output directory
-        self.output_dir = 'output'
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
+        self.output_dir = Path('output')
+        if not self.output_dir.exists():
+            self.output_dir.mkdir()
 
         # Initialize main widget
         main_widget = QWidget()
